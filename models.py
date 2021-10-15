@@ -203,15 +203,14 @@ def istft(spec, hl):
 def spec_effects(wave, algorithm='invert', value=None):
     spec = [stft(wave[0],2048,1024),stft(wave[1],2048,1024)]
     if algorithm == 'min_mag':
-        v_spec_m = np.where(np.abs(spec[0]) <= np.abs(spec[1]), spec[0], spec[1])
+        v_spec_m = np.where(np.abs(spec[1]) <= np.abs(spec[0]), spec[1], spec[0])
         wave = istft(v_spec_m,1024)
     elif algorithm == 'max_mag':
-        v_spec_m = np.where(np.abs(spec[0]) >= np.abs(spec[1]), spec[0], spec[1])
+        v_spec_m = np.where(np.abs(spec[1]) >= np.abs(spec[0]), spec[1], spec[0])
         wave = istft(v_spec_m,1024)
     elif algorithm == 'default':
-        wave = [istft(spec[0],1024),istft(spec[1],1024)]
-        #base_out * b + demucs_out * (1-b)
-        wave = wave[0] * value + wave[1] * (1-value)
+        #wave = [istft(spec[0],1024),istft(spec[1],1024)]
+        wave = wave[1] * value + wave[0] * (1-value)
     return wave
 
     
