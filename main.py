@@ -163,8 +163,6 @@ def main():
     e = os.path.join(args.output,_basename)
 
     pred = Predictor()
-    if args.fp16:
-        torch.set_default_tensor_type(torch.cuda.HalfTensor)
     pred.prediction_setup(demucs_name=args.model,
                           channels=args.channel)
     
