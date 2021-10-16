@@ -210,7 +210,7 @@ def spec_effects(wave, algorithm='invert', value=None):
         wave = istft(v_spec_m,1024)
     elif algorithm == 'default':
         #wave = [istft(spec[0],1024),istft(spec[1],1024)]
-        wave = wave[1] * value + wave[0] * (1-value)
+        wave = (wave[1] * value) + (wave[0] * (1-value))
     return wave
 
     
