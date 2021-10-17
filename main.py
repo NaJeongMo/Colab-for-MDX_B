@@ -160,7 +160,7 @@ class Predictor:
         sources = list(a.values())
         sources = np.concatenate(sources, axis=-1)
         progress_bar.close()
-        print(' >>done\n')
+        print(' >> done\n')
         return sources
 def main():
     global args
