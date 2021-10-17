@@ -53,6 +53,8 @@ class Predictor:
                  'vocals']
         #mix, rate = sf.read(m)
         mix, rate = librosa.load(m, mono=False, sr=44100)
+        if mix.ndim == 1:
+            mix = np.asarray([mix,mix])
         mix = mix.T
         sources = self.demix(mix.T)
         print('-'*30)
