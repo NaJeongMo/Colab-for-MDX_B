@@ -12,7 +12,10 @@ import time
 import argparse
 import os
 from tqdm import tqdm
-from contextlib import contextmanager
+import hashlib
+from pathvalidate import sanitize_filename
+import youtube_dl
+from contextlib import contextmanager, suppress
 import warnings
 import sys
 import librosa
@@ -53,8 +56,6 @@ class Predictor:
                  'vocals']
         #mix, rate = sf.read(m)
         mix, rate = librosa.load(m, mono=False, sr=44100)
-        if mix.ndim == 1:
-            mix = np.asarray([mix,mix])
         mix = mix.T
         sources = self.demix(mix.T)
         print('-'*30)
@@ -70,6 +71,8 @@ class Predictor:
             print('done')
     def normalise(self, wave):
         return wave / max(np.max(wave), abs(np.min(wave)))
+    def dB_V(self, dB):
+        return 10**(dB/20)
     def demix(self, mix):
         # 1 = demucs only
         # 0 = onnx only
@@ -96,7 +99,7 @@ class Predictor:
                 print(f'Using ratio: {b[s[0]]}')
                 sources.append(spec_effects(wave=[demucs_out[s[0]],base_out[s[1]]],
                                             algorithm=args.mixing,
-                                            value=b[s[0]]))
+                                            value=b[s[0]])*args.compensate) # compensation
         return sources
     def demix_base(self, mixes, sindex):
         def concat_sources(chunked_sources):
@@ -164,6 +167,27 @@ class Predictor:
         progress_bar.close()
         print(' >> done\n')
         return sources
+
+def downloader(link, supress=True, dl=False):
+    if 'https://' in link:
+        inputsha = hashlib.sha1(bytes(link, encoding='utf8')).hexdigest() + '.wav'
+        fmt = '251/140/250/139' if 'youtu' in link else 'best'
+        s = 'YouTube link' if 'youtu' in link else 'Link'
+        opt = {'format': fmt, 'outtmpl': inputsha, 'updatetime': False, 'nocheckcertificate': True}
+        if not supress:
+            print(f'{s} detected.\nAttempting to download...',end=' ')
+        
+        with youtube_dl.YoutubeDL(opt) as ydl:
+            ## dowload n take youtube info
+            desc = ydl.extract_info(link, download=not os.path.isfile(inputsha) or dl)
+
+        titlename = sanitize_filename(desc['title'])
+        if not supress:
+            print('done\n'+titlename)
+        return [inputsha,titlename]
+    else:
+        return [link]
+
 def main():
     global args
     p = argparse.ArgumentParser()
@@ -185,10 +209,17 @@ def main():
                               help='Split input files into chunks for lower ram utilisation')
 
     #experimental
+    p.add_argument('--compensate', type=float, default=1)
+
     p.add_argument('--channel','-c', type=int, default=64)
     p.add_argument('--overlap','-ov', type=float, default=0.25)
     args = p.parse_args()
 
+    autoDL = downloader(args.input)
+    isLink = False
+    if len(autoDL) >= 2:
+        args.input = autoDL[0]
+        isLink = True
     _basename = os.path.splitext(os.path.basename(args.input))[0]
 
     if not os.path.exists(os.path.join(args.output,_basename)):
@@ -213,8 +244,9 @@ def main():
         if not os.path.isfile(os.path.join(args.onnx,os.path.splitext(stems[c])[0])+'.onnx'):
             raise FileNotFoundError(f'{os.path.splitext(stems[c])[0]}.onnx not found')
     output = lambda x, stem: os.path.join(x,stems[stem])
-
+    print(args.output)
     e = os.path.join(args.output,_basename)
+    print(e)
 
     pred = Predictor()
     pred.prediction_setup(demucs_name=args.model,
@@ -231,6 +263,11 @@ def main():
 
     )
 
+    if isLink:
+        os.rename(os.path.join(args.output,_basename),
+                  os.path.join(args.output,autoDL[1]))
+        if os.path.isfile(args.input):
+            os.remove(args.input)
 
 if __name__ == '__main__':
     start_time = time.time()
