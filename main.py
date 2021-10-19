@@ -177,7 +177,7 @@ def downloader(link, supress=True, dl=False):
         if not supress:
             print(f'{s} detected.\nAttempting to download...',end=' ')
         
-        with youtube_dl.YoutubeDL(opt) as ydl:
+        with hide_opt(), youtube_dl.YoutubeDL(opt) as ydl:
             ## dowload n take youtube info
             desc = ydl.extract_info(link, download=not os.path.isfile(inputsha) or dl)
 
@@ -244,9 +244,7 @@ def main():
         if not os.path.isfile(os.path.join(args.onnx,os.path.splitext(stems[c])[0])+'.onnx'):
             raise FileNotFoundError(f'{os.path.splitext(stems[c])[0]}.onnx not found')
     output = lambda x, stem: os.path.join(x,stems[stem])
-    print(args.output)
     e = os.path.join(args.output,_basename)
-    print(e)
 
     pred = Predictor()
     pred.prediction_setup(demucs_name=args.model,
