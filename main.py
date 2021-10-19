@@ -217,8 +217,8 @@ def main():
 
     autoDL = downloader(args.input)
     isLink = False
-    if len(autoDL) >= 2:
-        args.input = autoDL[0]
+    args.input = autoDL[0]
+    if len(autoDL) == 2:
         isLink = True
     _basename = os.path.splitext(os.path.basename(args.input))[0]
 
