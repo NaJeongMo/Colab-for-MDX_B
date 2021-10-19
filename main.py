@@ -168,7 +168,7 @@ class Predictor:
         print(' >> done\n')
         return sources
 
-def downloader(link, supress=True, dl=False):
+def downloader(link, supress=False, dl=False):
     if 'https://' in link:
         inputsha = hashlib.sha1(bytes(link, encoding='utf8')).hexdigest() + '.wav'
         fmt = '251/140/250/139' if 'youtu' in link else 'best'
