@@ -14,6 +14,7 @@ import os
 from tqdm import tqdm
 import hashlib
 from pathvalidate import sanitize_filename
+from django.core.validators import URLValidator
 import youtube_dl
 from contextlib import contextmanager, suppress
 import warnings
@@ -169,7 +170,9 @@ class Predictor:
         return sources
 
 def downloader(link, supress=False, dl=False):
-    if 'https://' in link:
+    validate = URLValidator()
+    try:
+        validate(link)
         inputsha = hashlib.sha1(bytes(link, encoding='utf8')).hexdigest() + '.wav'
         fmt = '251/140/250/139' if 'youtu' in link else 'best'
         s = 'YouTube link' if 'youtu' in link else 'Link'
@@ -185,7 +188,7 @@ def downloader(link, supress=False, dl=False):
         if not supress:
             print('done\n'+titlename)
         return [inputsha,titlename]
-    else:
+    except:
         return [link]
 
 def main():
