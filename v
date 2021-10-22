@@ -1,5 +1,4 @@
 
 
--Fixed mono conversion
--Added YouTube/Link support
+-Mounting is 6 times faster now!
 
