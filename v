@@ -1,4 +1,5 @@
 
 
--Mounting is 6 times faster now!
+-Added automated stem inverting to input track
+-More stable main.py
 
