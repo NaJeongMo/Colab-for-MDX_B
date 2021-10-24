@@ -70,7 +70,7 @@ class Predictor:
                 sources[i] = self.normalise(sources[i])
             sf.write(file_paths[i], sources[i].T, rate)
             print('done')
-        if args.invert is not None:
+        if args.invert != '':
             print('-'*20)
             for i in vindex:
                 print('Inverting and exporting {}...'.format(stems[i]), end=' ')
