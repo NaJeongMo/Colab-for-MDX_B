@@ -223,7 +223,7 @@ def main():
     p.add_argument('--chunks','-C', default=1, type=int,
                               help='Split input files into chunks for lower ram utilisation')
 
-    p.add_argument('--invert','-inv', type=str, default=None,
+    p.add_argument('--invert','-inv', type=str, default='',
                               help='invert stems to mixture. Ex: \'-inv v\' to get mixture-vocal difference.')
 
     #experimental
