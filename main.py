@@ -59,17 +59,25 @@ class Predictor:
         mix, rate = librosa.load(m, mono=False, sr=44100)
         mix = mix.T
         sources = self.demix(mix.T)
-        print('-'*30)
+        print('-'*20)
         print('Inferences finished!')
-        print('-'*30)
+        print('-'*20)
         c = -1
-        for i in zip(range(len(sources)), sindex):
+        for i in sindex:
             c += 1
-            print(f'Exporting {stems[i[1]]}...',end=' ')
+            print(f'Exporting {stems[i]}...',end=' ')
             if args.normalise:
-                sources[i[0]] = self.normalise(sources[i[0]])
-            sf.write(file_paths[i[1]], sources[i[0]].T, rate)
+                sources[i] = self.normalise(sources[i])
+            sf.write(file_paths[i], sources[i].T, rate)
             print('done')
+        if args.invert is not None:
+            print('-'*20)
+            for i in vindex:
+                print('Inverting and exporting {}...'.format(stems[i]), end=' ')
+                p = os.path.split(file_paths[i])
+                sf.write(os.path.join(p[0],'invert_'+p[1]), (-sources[i].T)+mix, rate)
+                print('done')
+        print('-'*20)
     def normalise(self, wave):
         return wave / max(np.max(wave), abs(np.min(wave)))
     def dB_V(self, dB):
@@ -83,6 +91,7 @@ class Predictor:
         segmented_mix = {}
         if args.chunks == 0:
             chunk_size = int(mix.shape[-1])
+
         for skip in range(0, samples, chunk_size):
             end = min(skip+(chunk_size), samples)
             segmented_mix[skip] = mix[:,skip:end].copy()
@@ -90,15 +99,18 @@ class Predictor:
 
         if args.model == 'off' and args.onnx != 'off':
             sources = self.demix_base(segmented_mix, sindex)
+
         elif args.model != 'off' and args.onnx == 'off':
             sources = self.demix_demucs(segmented_mix)
+
         else: # both, apply spec effects in condition
-            demucs_out = self.demix_demucs(segmented_mix)
             base_out = self.demix_base(segmented_mix, sindex)
-            sources = []
+            demucs_out = self.demix_demucs(segmented_mix)
+            sources = {}
             for s in zip(sindex,range(len(b)-(len(sindex)-len(b)))):
-                print(f'Using ratio: {b[s[0]]}')
-                sources.append(spec_effects(wave=[demucs_out[s[0]],base_out[s[1]]],
+                if not 'off' in [args.model,args.onnx]:
+                    print(f'Using ratio: {b[s[0]]}')
+                sources[s[0]] = (spec_effects(wave=[demucs_out[s[0]],base_out[s[1]]],
                                             algorithm=args.mixing,
                                             value=b[s[0]])*args.compensate) # compensation
         return sources
@@ -211,6 +223,9 @@ def main():
     p.add_argument('--chunks','-C', default=1, type=int,
                               help='Split input files into chunks for lower ram utilisation')
 
+    p.add_argument('--invert','-inv', type=str, default=None,
+                              help='invert stems to mixture. Ex: \'-inv v\' to get mixture-vocal difference.')
+
     #experimental
     p.add_argument('--compensate', type=float, default=1)
 
@@ -224,28 +239,39 @@ def main():
     if len(autoDL) == 2:
         isLink = True
     _basename = os.path.splitext(os.path.basename(args.input))[0]
-
     if not os.path.exists(os.path.join(args.output,_basename)):
         os.makedirs(os.path.join(args.output,_basename))
-    global sindex
-    sindex = []
+    if args.invert is not None and args.normalise:
+        print('Inverting stems with normalise flag is not advised.')
+    #some krazy A.I here 😎 dun judge my code plzzz lol
+    global sindex, vindex
+    sindex,vindex = [],[]
     if 'b' in args.stems:
         sindex.append(0)
+        if 'b' in args.invert:
+            vindex.append(0)
     if 'd' in args.stems:
         sindex.append(1)
+        if 'd' in args.invert:
+            vindex.append(1)
     if 'o' in args.stems:
         sindex.append(2)
+        if 'o' in args.invert:
+            vindex.append(2)
     if 'v' in args.stems:
         sindex.append(3)
+        if 'v' in args.invert:
+            vindex.append(3)
     stems = [
         'bass.wav',
         'drums.wav',
         'other.wav',
         'vocals.wav'
     ]
-    for c in sindex:
-        if not os.path.isfile(os.path.join(args.onnx,os.path.splitext(stems[c])[0])+'.onnx'):
-            raise FileNotFoundError(f'{os.path.splitext(stems[c])[0]}.onnx not found')
+    if args.onnx != 'off':
+        for c in sindex:
+            if not os.path.isfile(os.path.join(args.onnx,os.path.splitext(stems[c])[0])+'.onnx'):
+                raise FileNotFoundError(f'{os.path.splitext(stems[c])[0]}.onnx not found')
     output = lambda x, stem: os.path.join(x,stems[stem])
     e = os.path.join(args.output,_basename)
 
