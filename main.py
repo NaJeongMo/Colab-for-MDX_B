@@ -21,9 +21,8 @@ import warnings
 import sys
 import librosa
 warnings.filterwarnings("ignore")
-
+cpu = torch.device('cpu')
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-
 @contextmanager
 def hide_opt():
     with open(os.devnull, "w") as devnull:
@@ -39,7 +38,6 @@ class Predictor:
         pass
     def prediction_setup(self, demucs_name,
                                channels=64):
-        self.models = get_models('tdf_extra', load=False, device=device, stems=args.stems)
         if args.model != 'off':
             self.demucs = Demucs(sources=["drums", "bass", "other", "vocals"], channels=channels)
             print('Loading checkpoint...',end=' ')
@@ -47,6 +45,16 @@ class Predictor:
             self.demucs.load_state_dict(torch.load(demucs_name))
             print('done')
             self.demucs.eval()
+        self.onnx_models = {}
+        c = 0
+        if args.onnx != 'off':
+            self.models = get_models('tdf_extra', load=False, device=cpu, stems=args.stems)
+            print(f'Loading onnx model{"s" if len(self.models) > 1 else ""}...',end=' ')
+            for model in self.models:
+                c+=1
+                self.onnx_models[c] = ort.InferenceSession(os.path.join(args.onnx,model.target_name+'.onnx'))
+            print('done')
+
         
         
     def prediction(self, m,b,d,o,v):
@@ -57,6 +65,8 @@ class Predictor:
                  'vocals']
         #mix, rate = sf.read(m)
         mix, rate = librosa.load(m, mono=False, sr=44100)
+        if mix.ndim == 1:
+            mix = np.asfortranarray([mix,mix])
         mix = mix.T
         sources = self.demix(mix.T)
         print('-'*20)
@@ -70,7 +80,7 @@ class Predictor:
                 sources[i] = self.normalise(sources[i])
             sf.write(file_paths[i], sources[i].T, rate)
             print('done')
-        if args.invert != '':
+        if args.invert is not None:
             print('-'*20)
             for i in vindex:
                 print('Inverting and exporting {}...'.format(stems[i]), end=' ')
@@ -89,23 +99,29 @@ class Predictor:
         chunk_size = args.chunks*44100
         b = np.array([[[0.5]], [[0.5]], [[0.7]], [[0.9]]])
         segmented_mix = {}
+        margin = args.margin
         if args.chunks == 0:
             chunk_size = int(mix.shape[-1])
+        
 
+        c = 0
         for skip in range(0, samples, chunk_size):
-            end = min(skip+(chunk_size), samples)
-            segmented_mix[skip] = mix[:,skip:end].copy()
+            c+=1
+            end = min(skip+chunk_size+margin, samples)
+            s_margin = 0 if c == 1 else margin
+            e_margin = skip-s_margin
+            segmented_mix[skip] = mix[:,e_margin:end].copy()
         segmented_mix = list(segmented_mix.values())
 
         if args.model == 'off' and args.onnx != 'off':
-            sources = self.demix_base(segmented_mix, sindex)
+            sources = self.demix_base(segmented_mix, sindex, margin_size=margin)
 
         elif args.model != 'off' and args.onnx == 'off':
-            sources = self.demix_demucs(segmented_mix)
+            sources = self.demix_demucs(segmented_mix, margin_size=margin)
 
         else: # both, apply spec effects in condition
-            base_out = self.demix_base(segmented_mix, sindex)
-            demucs_out = self.demix_demucs(segmented_mix)
+            base_out = self.demix_base(segmented_mix, sindex, margin_size=margin)
+            demucs_out = self.demix_demucs(segmented_mix, margin_size=margin)
             sources = {}
             for s in zip(sindex,range(len(b)-(len(sindex)-len(b)))):
                 if not 'off' in [args.model,args.onnx]:
@@ -114,7 +130,7 @@ class Predictor:
                                             algorithm=args.mixing,
                                             value=b[s[0]])*args.compensate) # compensation
         return sources
-    def demix_base(self, mixes, sindex):
+    def demix_base(self, mixes, sindex, margin_size):
         def concat_sources(chunked_sources):
             sources = []
             for s in range(len(sindex)):
@@ -128,9 +144,12 @@ class Predictor:
         progress_bar = tqdm(total=len(mixes)*len(self.models))
         progress_bar.set_description("Processing base")
         for mix in mixes:
+            c += 1
             sources = []
             n_sample = mix.shape[1]
+            mod = 0
             for model in self.models:
+                mod += 1
                 trim = model.n_fft//2
                 gen_size = model.chunk_size-2*trim
                 pad = gen_size - n_sample%gen_size
@@ -141,30 +160,35 @@ class Predictor:
                     waves = np.array(mix_p[:, i:i+model.chunk_size])
                     mix_waves.append(waves)
                     i += gen_size
-                mix_waves = torch.tensor(mix_waves, dtype=torch.float32).to(device)
+                mix_waves = torch.tensor(mix_waves, dtype=torch.float32).to(cpu)
                 with torch.no_grad():
-                    _ort = ort.InferenceSession(os.path.join(args.onnx,model.target_name+'.onnx'))
+                    _ort = self.onnx_models[mod]
+                    #_ort = ort.InferenceSession(os.path.join(args.onnx,model.target_name+'.onnx'))
                     spek = model.stft(mix_waves)
                     
-                    tar_waves = model.istft(torch.tensor(_ort.run(None, {'input': spek.cpu().numpy()})[0]).to(device)).cpu()
+                    tar_waves = model.istft(torch.tensor(_ort.run(None, {'input': spek.cpu().numpy()})[0]))#.cpu()
 
                     tar_signal = tar_waves[:,:,trim:-trim].transpose(0,1).reshape(2, -1).numpy()[:, :-pad]
-                
-                    sources.append(tar_signal)
+                    s_margin = None if c == 1 else margin_size
+                    e_margin = None if c == len(mixes) else -margin_size   
+                    sources.append(tar_signal[:,s_margin:e_margin])
                 progress_bar.update(1)
-            c += 1
+            
             chunked_sources[c] = sources
         _sources = concat_sources(chunked_sources)
         progress_bar.close()
         print(' >> done\n')
+        del self.onnx_models
         return np.array(_sources)
     
-    def demix_demucs(self, mix):
+    def demix_demucs(self, mix, margin_size):
         a = {}
         #counter = 0
         progress_bar = tqdm(total=len(mix))
         progress_bar.set_description("Processing demucs")
+        chunk = 0
         for nmix in mix:
+            chunk += 1
             nmix = torch.tensor(nmix, dtype=torch.float32)
             ref = nmix.mean(0)        
             nmix = (nmix - ref.mean()) / ref.std()
@@ -173,7 +197,10 @@ class Predictor:
                 sources = apply_model(self.demucs, nmix.to(device), split=True, overlap=args.overlap, shifts=args.shifts)
             sources = (sources * ref.std() + ref.mean()).cpu().numpy()
             sources[[0,1]] = sources[[1,0]]
-            a[nmix] = sources
+
+            s_margin = None if chunk == 1 else margin_size
+            e_margin = None if chunk == len(mix) else -margin_size
+            a[chunk] = sources[:,:,s_margin:e_margin]
             progress_bar.update(1)
         sources = list(a.values())
         sources = np.concatenate(sources, axis=-1)
@@ -222,15 +249,17 @@ def main():
     p.add_argument('--stems', '-s', default='bdov')
     p.add_argument('--chunks','-C', default=1, type=int,
                               help='Split input files into chunks for lower ram utilisation')
+    p.add_argument('--margin',default=44100, type=int,
+                              help='margin between chunks')
 
-    p.add_argument('--invert','-inv', type=str, default='',
+    p.add_argument('--invert','-inv', type=str, default=None,
                               help='invert stems to mixture. Ex: \'-inv v\' to get mixture-vocal difference.')
 
     #experimental
     p.add_argument('--compensate', type=float, default=1)
 
     p.add_argument('--channel','-c', type=int, default=64)
-    p.add_argument('--overlap','-ov', type=float, default=0.25)
+    p.add_argument('--overlap','-ov', type=float, default=0.5)
     args = p.parse_args()
 
     autoDL = downloader(args.input)
@@ -241,6 +270,8 @@ def main():
     _basename = os.path.splitext(os.path.basename(args.input))[0]
     if not os.path.exists(os.path.join(args.output,_basename)):
         os.makedirs(os.path.join(args.output,_basename))
+    if args.model == 'off' and args.onnx == 'off':
+        print('Not so sure what model to use huh? 😉')
     if args.invert is not None and args.normalise:
         print('Inverting stems with normalise flag is not advised.')
     #some krazy A.I here 😎 dun judge my code plzzz lol
