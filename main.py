@@ -122,6 +122,7 @@ class Predictor:
         else: # both, apply spec effects in condition
             base_out = self.demix_base(segmented_mix, sindex, margin_size=margin)
             demucs_out = self.demix_demucs(segmented_mix, margin_size=margin)
+            demucs_out, base_out = np.nan_to_num(demucs_out), np.nan_to_num(base_out)
             sources = {}
             for s in zip(sindex,range(len(b)-(len(sindex)-len(b)))):
                 if not 'off' in [args.model,args.onnx]:
