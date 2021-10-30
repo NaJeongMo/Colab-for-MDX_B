@@ -2,9 +2,9 @@
 
 updates:
   -smoother chunks
-  -faster overall inference
+  -faster inferences
+  -fixed audio buffer is not finite everywhere
 
 known errors:
   -cannot disable demucs, or cannot use onnx model only.
-  -AUDIO BUFFER IS NOT FINITE EVERYWHERE -_-
 
