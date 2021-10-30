@@ -1,5 +1,6 @@
 # this module seems messy, you can't import this module and use it with another script
 # It's using a global variable (args) for argument parsing.
+from random import sample
 from numpy.lib import ediff1d, source
 import soundfile as sf
 import torch
@@ -20,6 +21,7 @@ from contextlib import contextmanager, suppress
 import warnings
 import sys
 import librosa
+from math import ceil
 warnings.filterwarnings("ignore")
 cpu = torch.device('cpu')
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -54,8 +56,6 @@ class Predictor:
                 c+=1
                 self.onnx_models[c] = ort.InferenceSession(os.path.join(args.onnx,model.target_name+'.onnx'))
             print('done')
-
-        
         
     def prediction(self, m,b,d,o,v):
         file_paths = [b,d,o,v]    
@@ -80,7 +80,7 @@ class Predictor:
                 sources[i] = self.normalise(sources[i])
             sf.write(file_paths[i], sources[i].T, rate)
             print('done')
-        if args.invert is not None:
+        if args.invert != '':
             print('-'*20)
             for i in vindex:
                 print('Inverting and exporting {}...'.format(stems[i]), end=' ')
@@ -96,37 +96,48 @@ class Predictor:
         # 1 = demucs only
         # 0 = onnx only
         samples = mix.shape[-1]
+        margin = args.margin
         chunk_size = args.chunks*44100
+        assert not margin == 0, 'margin cannot be zero!'
+        if margin > chunk_size:
+            margin = chunk_size
+
+
         b = np.array([[[0.5]], [[0.5]], [[0.7]], [[0.9]]])
         segmented_mix = {}
-        margin = args.margin
-        if args.chunks == 0:
-            chunk_size = int(mix.shape[-1])
         
-
-        c = 0
+        if args.chunks == 0 or samples < chunk_size:
+            chunk_size = samples-1
+        
+        counter = -1
         for skip in range(0, samples, chunk_size):
-            c+=1
+            counter+=1
+    
+            s_margin = 0 if counter == 0 else margin
             end = min(skip+chunk_size+margin, samples)
-            s_margin = 0 if c == 1 else margin
-            e_margin = skip-s_margin
-            segmented_mix[skip] = mix[:,e_margin:end].copy()
-        segmented_mix = list(segmented_mix.values())
 
+            start = skip-s_margin
+
+            segmented_mix[skip] = mix[:,start:end].copy()
+            if end == samples:
+                break
+        
         if args.model == 'off' and args.onnx != 'off':
             sources = self.demix_base(segmented_mix, sindex, margin_size=margin)
-
+            
         elif args.model != 'off' and args.onnx == 'off':
             sources = self.demix_demucs(segmented_mix, margin_size=margin)
 
-        else: # both, apply spec effects in condition
+        else: # both, apply spec effects
             base_out = self.demix_base(segmented_mix, sindex, margin_size=margin)
             demucs_out = self.demix_demucs(segmented_mix, margin_size=margin)
-            demucs_out, base_out = np.nan_to_num(demucs_out), np.nan_to_num(base_out)
+            nan_count = np.count_nonzero(np.isnan(demucs_out)) + np.count_nonzero(np.isnan(base_out))
+            if nan_count > 0:
+                print('Warning: there are {} nan values in the array(s).'.format(nan_count))
+                demucs_out, base_out = np.nan_to_num(demucs_out), np.nan_to_num(base_out)
             sources = {}
             for s in zip(sindex,range(len(b)-(len(sindex)-len(b)))):
-                if not 'off' in [args.model,args.onnx]:
-                    print(f'Using ratio: {b[s[0]]}')
+                print(f'Using ratio: {b[s[0]]}')
                 sources[s[0]] = (spec_effects(wave=[demucs_out[s[0]],base_out[s[1]]],
                                             algorithm=args.mixing,
                                             value=b[s[0]])*args.compensate) # compensation
@@ -136,25 +147,24 @@ class Predictor:
             sources = []
             for s in range(len(sindex)):
                 source = []
-                for chunk in range(1, len(chunked_sources)+1):
+                for chunk in range(len(chunked_sources)):
                     source.append(chunked_sources[chunk][s])
                 sources.append(np.concatenate(source, axis=-1))
             return sources
-        chunked_sources = {}
-        c = 0
+        chunked_sources = []
         progress_bar = tqdm(total=len(mixes)*len(self.models))
         progress_bar.set_description("Processing base")
         for mix in mixes:
-            c += 1
+            cmix = mixes[mix]
             sources = []
-            n_sample = mix.shape[1]
+            n_sample = cmix.shape[1]
             mod = 0
             for model in self.models:
                 mod += 1
                 trim = model.n_fft//2
                 gen_size = model.chunk_size-2*trim
                 pad = gen_size - n_sample%gen_size
-                mix_p = np.concatenate((np.zeros((2,trim)), mix, np.zeros((2,pad)), np.zeros((2,trim))), 1)
+                mix_p = np.concatenate((np.zeros((2,trim)), cmix, np.zeros((2,pad)), np.zeros((2,trim))), 1)
                 mix_waves = []
                 i = 0
                 while i < n_sample + pad:
@@ -164,46 +174,50 @@ class Predictor:
                 mix_waves = torch.tensor(mix_waves, dtype=torch.float32).to(cpu)
                 with torch.no_grad():
                     _ort = self.onnx_models[mod]
-                    #_ort = ort.InferenceSession(os.path.join(args.onnx,model.target_name+'.onnx'))
                     spek = model.stft(mix_waves)
                     
                     tar_waves = model.istft(torch.tensor(_ort.run(None, {'input': spek.cpu().numpy()})[0]))#.cpu()
 
                     tar_signal = tar_waves[:,:,trim:-trim].transpose(0,1).reshape(2, -1).numpy()[:, :-pad]
-                    s_margin = None if c == 1 else margin_size
-                    e_margin = None if c == len(mixes) else -margin_size   
-                    sources.append(tar_signal[:,s_margin:e_margin])
+
+                    start = 0 if mix == 0 else margin_size
+                    end = None if mix == list(mixes.keys())[::-1][0] else -margin_size
+
+                    sources.append(tar_signal[:,start:end])
+
                 progress_bar.update(1)
             
-            chunked_sources[c] = sources
-        _sources = concat_sources(chunked_sources)
+            chunked_sources.append(sources)
+        #_sources = concat_sources(chunked_sources)
+        _sources = np.concatenate(chunked_sources, axis=-1)
+        del self.onnx_models
         progress_bar.close()
         print(' >> done\n')
-        del self.onnx_models
-        return np.array(_sources)
+        return _sources
     
     def demix_demucs(self, mix, margin_size):
-        a = {}
+        processed = {}
         #counter = 0
         progress_bar = tqdm(total=len(mix))
         progress_bar.set_description("Processing demucs")
-        chunk = 0
         for nmix in mix:
-            chunk += 1
-            nmix = torch.tensor(nmix, dtype=torch.float32)
-            ref = nmix.mean(0)        
-            nmix = (nmix - ref.mean()) / ref.std()
+            cmix = mix[nmix]
+            cmix = torch.tensor(cmix, dtype=torch.float32)
+            ref = cmix.mean(0)        
+            cmix = (cmix - ref.mean()) / ref.std()
             
             with torch.no_grad():
-                sources = apply_model(self.demucs, nmix.to(device), split=True, overlap=args.overlap, shifts=args.shifts)
+                sources = apply_model(self.demucs, cmix.to(device), split=True, overlap=args.overlap, shifts=args.shifts)
             sources = (sources * ref.std() + ref.mean()).cpu().numpy()
             sources[[0,1]] = sources[[1,0]]
 
-            s_margin = None if chunk == 1 else margin_size
-            e_margin = None if chunk == len(mix) else -margin_size
-            a[chunk] = sources[:,:,s_margin:e_margin]
+            start = 0 if nmix == 0 else margin_size
+            end = None if nmix == list(mix.keys())[::-1][0] else -margin_size
+
+            processed[nmix] = sources[:,:,start:end].copy()
+
             progress_bar.update(1)
-        sources = list(a.values())
+        sources = list(processed.values())
         sources = np.concatenate(sources, axis=-1)
         progress_bar.close()
         print(' >> done\n')
@@ -253,11 +267,16 @@ def main():
     p.add_argument('--margin',default=44100, type=int,
                               help='margin between chunks')
 
-    p.add_argument('--invert','-inv', type=str, default=None,
+    p.add_argument('--invert','-inv', type=str, default='',
                               help='invert stems to mixture. Ex: \'-inv v\' to get mixture-vocal difference.')
 
     #experimental
-    p.add_argument('--compensate', type=float, default=1)
+    p.add_argument('--compensate', type=float, default=1.04550228806)
+    """
+    compensate value is obtainable by calculating the difference amplitude
+    of input source and output stem.
+    final unit must be voltage ratio
+    """
 
     p.add_argument('--channel','-c', type=int, default=64)
     p.add_argument('--overlap','-ov', type=float, default=0.5)
