@@ -65,6 +65,8 @@ class Predictor:
                  'vocals']
         #mix, rate = sf.read(m)
         mix, rate = librosa.load(m, mono=False, sr=44100)
+        if args.normalise:
+            self.normalise(mix)
         if mix.ndim == 1:
             mix = np.asfortranarray([mix,mix])
         mix = mix.T
@@ -75,18 +77,33 @@ class Predictor:
         c = -1
         for i in sindex:
             c += 1
-            print(f'Exporting {stems[i]}...',end=' ')
-            if args.normalise:
-                sources[i] = self.normalise(sources[i])
-            sf.write(file_paths[i], sources[i].T, rate)
-            print('done')
+            if args.model == 'off':
+                print(f'Exporting {stems[i]}...',end=' ')
+                #if args.normalise:
+                #    sources[c] = self.normalise(sources[c])
+                sf.write(file_paths[i], sources[c].T, rate)
+                print('done')
+            else:
+                print(f'Exporting {stems[i]}...',end=' ')
+                #if args.normalise:
+                #    sources[i] = self.normalise(sources[i])
+                sf.write(file_paths[i], sources[i].T, rate)
+                print('done')
+        c = -1
         if args.invert != '':
+            c += 1
             print('-'*20)
             for i in vindex:
-                print('Inverting and exporting {}...'.format(stems[i]), end=' ')
-                p = os.path.split(file_paths[i])
-                sf.write(os.path.join(p[0],'invert_'+p[1]), (-sources[i].T)+mix, rate)
-                print('done')
+                if args.model == 'off':
+                    print('Inverting and exporting {}...'.format(stems[i]), end=' ')
+                    p = os.path.split(file_paths[i])
+                    sf.write(os.path.join(p[0],'invert_'+p[1]), (-sources[c].T)+mix, rate)
+                    print('done')
+                else:
+                    print('Inverting and exporting {}...'.format(stems[i]), end=' ')
+                    p = os.path.split(file_paths[i])
+                    sf.write(os.path.join(p[0],'invert_'+p[1]), (-sources[i].T)+mix, rate)
+                    print('done')
         print('-'*20)
     def normalise(self, wave):
         return wave / max(np.max(wave), abs(np.min(wave)))
@@ -107,7 +124,7 @@ class Predictor:
         segmented_mix = {}
         
         if args.chunks == 0 or samples < chunk_size:
-            chunk_size = samples-1
+            chunk_size = samples
         
         counter = -1
         for skip in range(0, samples, chunk_size):
@@ -123,13 +140,13 @@ class Predictor:
                 break
         
         if args.model == 'off' and args.onnx != 'off':
-            sources = self.demix_base(segmented_mix, sindex, margin_size=margin)
+            sources = self.demix_base(segmented_mix, margin_size=margin)
             
         elif args.model != 'off' and args.onnx == 'off':
             sources = self.demix_demucs(segmented_mix, margin_size=margin)
 
         else: # both, apply spec effects
-            base_out = self.demix_base(segmented_mix, sindex, margin_size=margin)
+            base_out = self.demix_base(segmented_mix, margin_size=margin)
             demucs_out = self.demix_demucs(segmented_mix, margin_size=margin)
             nan_count = np.count_nonzero(np.isnan(demucs_out)) + np.count_nonzero(np.isnan(base_out))
             if nan_count > 0:
@@ -142,15 +159,7 @@ class Predictor:
                                             algorithm=args.mixing,
                                             value=b[s[0]])*args.compensate) # compensation
         return sources
-    def demix_base(self, mixes, sindex, margin_size):
-        def concat_sources(chunked_sources):
-            sources = []
-            for s in range(len(sindex)):
-                source = []
-                for chunk in range(len(chunked_sources)):
-                    source.append(chunked_sources[chunk][s])
-                sources.append(np.concatenate(source, axis=-1))
-            return sources
+    def demix_base(self, mixes, margin_size):
         chunked_sources = []
         progress_bar = tqdm(total=len(mixes)*len(self.models))
         progress_bar.set_description("Processing base")
@@ -182,13 +191,13 @@ class Predictor:
 
                     start = 0 if mix == 0 else margin_size
                     end = None if mix == list(mixes.keys())[::-1][0] else -margin_size
-
+                    if margin_size == 0:
+                        end = None
                     sources.append(tar_signal[:,start:end])
 
                 progress_bar.update(1)
             
             chunked_sources.append(sources)
-        #_sources = concat_sources(chunked_sources)
         _sources = np.concatenate(chunked_sources, axis=-1)
         del self.onnx_models
         progress_bar.close()
@@ -213,7 +222,8 @@ class Predictor:
 
             start = 0 if nmix == 0 else margin_size
             end = None if nmix == list(mix.keys())[::-1][0] else -margin_size
-
+            if margin_size == 0:
+                end = None
             processed[nmix] = sources[:,:,start:end].copy()
 
             progress_bar.update(1)
@@ -260,18 +270,19 @@ def main():
     p.add_argument('--mixing','-M', default='default', choices=['default','min_mag','max_mag'],
                               help='Mixing type')
     p.add_argument('--normalise','-n', default=False, action='store_true',
-                              help='Normalise stems')
-    p.add_argument('--stems', '-s', default='bdov')
-    p.add_argument('--chunks','-C', default=1, type=int,
+                              help='Normalise input before separation')
+    p.add_argument('--stems', '-s', default='bdov',
+                              help='Separate specific stems only. Ex: \'-inv vd\' to get vocal and drums stem only')
+    p.add_argument('--chunks','-C', default=0, type=int,
                               help='Split input files into chunks for lower ram utilisation')
     p.add_argument('--margin',default=44100, type=int,
                               help='margin between chunks')
-
+    #p.add_argument('--invert_ratio', '-ir', type='store_true', default=False)
     p.add_argument('--invert','-inv', type=str, default='',
                               help='invert stems to mixture. Ex: \'-inv v\' to get mixture-vocal difference.')
 
     #experimental
-    p.add_argument('--compensate', type=float, default=1.04550228806)
+    p.add_argument('--compensate', type=float, default=1.03597672895)
     """
     compensate value is obtainable by calculating the difference amplitude
     of input source and output stem.
@@ -291,7 +302,7 @@ def main():
     if not os.path.exists(os.path.join(args.output,_basename)):
         os.makedirs(os.path.join(args.output,_basename))
     if args.model == 'off' and args.onnx == 'off':
-        print('Not so sure what model to use huh? 😉')
+        quit('Not so sure what model to use huh? 😉')
     if args.invert is not None and args.normalise:
         print('Inverting stems with normalise flag is not advised.')
     #some krazy A.I here 😎 dun judge my code plzzz lol
