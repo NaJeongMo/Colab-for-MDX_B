@@ -1,6 +1,5 @@
 
 
 updates:
-  -fixed turning off any model
-  -fixed audio buffer not finite everywhere
+  -added new vocal model! 111721
 
