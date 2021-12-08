@@ -1,5 +1,5 @@
 
 
 updates:
-  -added new vocal model! 111721
+  -added new two vocal models!
 
