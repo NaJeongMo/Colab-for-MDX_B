@@ -303,8 +303,6 @@ def main():
         os.makedirs(os.path.join(args.output,_basename))
     if args.model == 'off' and args.onnx == 'off':
         quit('Not so sure what model to use huh? 😉')
-    if args.invert is not None and args.normalise:
-        print('Inverting stems with normalise flag is not advised.')
     #some krazy A.I here 😎 dun judge my code plzzz lol
     global sindex, vindex
     sindex,vindex = [],[]
@@ -324,6 +322,16 @@ def main():
         sindex.append(3)
         if 'v' in args.invert:
             vindex.append(3)
+    
+    #temporary to prevent errors
+    if 'bass' in args.onnx.lower():
+        sindex,vindex = [0],[0]
+    if 'drum' in args.onnx.lower():
+        sindex,vindex = [1],[1]
+    if 'other' in args.onnx.lower():
+        sindex,vindex = [2],[2]
+    if 'vocal' in args.onnx.lower():
+        sindex,vindex = [3],[3]
     stems = [
         'bass.wav',
         'drums.wav',
@@ -359,6 +367,6 @@ def main():
             os.remove(args.input)
 
 if __name__ == '__main__':
-    start_time = time.time()
+    start_time = time.perf_counter()
     main()
-    print("Successfully completed music demixing.");print('Total time: {0:.{1}f}s'.format(time.time() - start_time, 1))
+    print("Successfully completed music demixing.");print('Total time: {0:.{1}f}s'.format(time.perf_counter() - start_time, 1))
