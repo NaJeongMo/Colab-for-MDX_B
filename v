@@ -1,5 +1,4 @@
 
 
 updates:
-  -added new two vocal models!
-
+  -added new two BV models!
