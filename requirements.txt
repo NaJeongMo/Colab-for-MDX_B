@@ -1,0 +1,7 @@
+onnxruntime-gpu==1.14.1
+soundfile==0.12.1
+librosa==0.9.1
+tqdm
+pathvalidate
+yt_dlp
+numpy
