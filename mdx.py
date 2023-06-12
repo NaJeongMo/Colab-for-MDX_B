@@ -8,12 +8,13 @@ import hashlib
 warnings.filterwarnings("ignore")
 
 class MDX_Model:
-    def __init__(self, device, dim_f, dim_t, n_fft, hop=1024,):
+    def __init__(self, device, dim_f, dim_t, n_fft, hop=1024, stem_name=None):
         self.dim_f = dim_f
         self.dim_t = dim_t
         self.dim_c = 4
         self.n_fft = n_fft
         self.hop = hop
+        self.stem_name = stem_name
 
         self.n_bins = self.n_fft//2+1
         self.chunk_size = hop * (self.dim_t-1)
