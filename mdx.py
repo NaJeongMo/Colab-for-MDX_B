@@ -152,7 +152,7 @@ class MDX:
                 spec = self.model.stft(mix_waves)
                 processed_spec = torch.tensor(self.process(spec))
                 processed_wav = self.model.istft(processed_spec.to(self.device))
-                processed_wav = processed_wav[:,:,trim:-trim].transpose(0,1).reshape(2, -1).cpu().numpy()#[:, :-pad]
+                processed_wav = processed_wav[:,:,trim:-trim].transpose(0,1).reshape(2, -1).cpu().numpy()
                 pw.append(processed_wav)
         
-        return np.concatenate(pw, axis=-1)
+        return np.concatenate(pw, axis=-1)[:, :-pad]
