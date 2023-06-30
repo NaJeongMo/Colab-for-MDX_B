@@ -4,6 +4,8 @@ from tqdm import tqdm
 import warnings
 import numpy as np
 import hashlib
+import queue
+import threading
 
 warnings.filterwarnings("ignore")
 
@@ -56,23 +58,22 @@ class MDX:
 
     def __init__(self, model_path:str, params:MDX_Model, processor=DEFAULT_PROCESSOR):
 
+        # Set the device and the provider (CPU or CUDA)
         self.device = torch.device(f'cuda:{processor}') if processor >= 0 else torch.device('cpu')
         self.provider = ['CUDAExecutionProvider'] if processor >= 0 else ['CPUExecutionProvider']
 
         self.model = params
-        # self.model = MDX_Model(
-        #     self.device,
-        #     dim_f = 2048,
-        #     dim_t = 256,
-        #     n_fft = 2048*3 # dim_f * n_fft_scale[target_name]
-        # )
-        # )
+
+        # Load the ONNX model using ONNX Runtime
         self.ort = ort.InferenceSession(model_path, providers=self.provider)
+        # Preload the model for faster performance
+        self.ort.run(None, {'input':torch.rand(1, 4, params.dim_f, params.dim_t).numpy()})
         self.process = lambda spec:self.ort.run(None, {'input': spec.cpu().numpy()})[0]
+
+        self.prog = None
 
     @staticmethod
     def get_hash(model_path):
-
         try:
             with open(model_path, 'rb') as f:
                 f.seek(- 10000 * 1024, 2)
@@ -82,15 +83,26 @@ class MDX:
             
         return model_hash
     
-    # Segment or join segmented wave array
     @staticmethod
-    def segment(wave, combine=True, chunk_size=DEFAULT_CHUNK_SIZE, margin_size=DEFAULT_MARGIN_SIZE, sr=DEFAULT_SR) -> list:
+    def segment(wave, combine=True, chunk_size=DEFAULT_CHUNK_SIZE, margin_size=DEFAULT_MARGIN_SIZE):
+        """
+        Segment or join segmented wave array
+
+        Args:
+            wave: (np.array) Wave array to be segmented or joined
+            combine: (bool) If True, combines segmented wave array. If False, segments wave array.
+            chunk_size: (int) Size of each segment (in samples)
+            margin_size: (int) Size of margin between segments (in samples)
+
+        Returns:
+            numpy array: Segmented or joined wave array
+        """
         
         if combine:
             processed_wave = None  # Initializing as None instead of [] for later numpy array concatenation
             for segment_count, segment in enumerate(wave):
-                start = 0 if not segment_count else margin_size
-                end = None if segment_count == len(wave) else -margin_size
+                start = 0 if segment_count == 0 else margin_size
+                end = None if segment_count == len(wave)-1 else -margin_size
                 if margin_size == 0:
                     end = None
                 if processed_wave is None:  # Create array for first segment
@@ -110,8 +122,8 @@ class MDX:
 
             for segment_count, skip in enumerate(range(0, sample_count, chunk_size)):
 
-                margin = 0 if not segment_count else margin_size
-                end = min(skip+chunk_size+margin, sample_count)
+                margin = 0 if segment_count == 0 else margin_size
+                end = min(skip+chunk_size+margin_size, sample_count)
                 start = skip-margin
 
                 cut = wave[:,start:end].copy()
@@ -121,38 +133,96 @@ class MDX:
                     break
         
         return processed_wave
-    
-    def process_wave(self, wave:np.array):
-        
-        def pad_wave(wave):
-            n_sample = wave.shape[1]
-            trim = self.model.n_fft//2
-            gen_size = self.model.chunk_size-2*trim
-            pad = gen_size - n_sample%gen_size
 
-            # padded wave
-            wave_p = np.concatenate((np.zeros((2,trim)), wave, np.zeros((2,pad)), np.zeros((2,trim))), 1)
+    def pad_wave(self, wave):
+        """
+        Pad the wave array to match the required chunk size
 
-            mix_waves = []
-            for i in range(0, n_sample+pad, gen_size):
-                waves = np.array(wave_p[:, i:i+self.model.chunk_size])
-                mix_waves.append(waves)
+        Args:
+            wave: (np.array) Wave array to be padded
 
-            mix_waves = torch.tensor(mix_waves, dtype=torch.float32).to(self.device)
+        Returns:
+            tuple: (padded_wave, pad, trim)
+                - padded_wave: Padded wave array
+                - pad: Number of samples that were padded
+                - trim: Number of samples that were trimmed
+        """
+        n_sample = wave.shape[1]
+        trim = self.model.n_fft//2
+        gen_size = self.model.chunk_size-2*trim
+        pad = gen_size - n_sample%gen_size
 
-            return mix_waves, pad, trim
+        # Padded wave
+        wave_p = np.concatenate((np.zeros((2,trim)), wave, np.zeros((2,pad)), np.zeros((2,trim))), 1)
 
-        mix_waves, pad, trim = pad_wave(wave)
-        mix_wavesx = mix_waves.split(1)
+        mix_waves = []
+        for i in range(0, n_sample+pad, gen_size):
+            waves = np.array(wave_p[:, i:i+self.model.chunk_size])
+            mix_waves.append(waves)
 
+        mix_waves = torch.tensor(mix_waves, dtype=torch.float32).to(self.device)
+
+        return mix_waves, pad, trim
+
+    def _process_wave(self, mix_waves, trim, pad, q:queue.Queue, _id:int):
+        """
+        Process each wave segment in a multi-threaded environment
+
+        Args:
+            mix_waves: (torch.Tensor) Wave segments to be processed
+            trim: (int) Number of samples trimmed during padding
+            pad: (int) Number of samples padded during padding
+            q: (queue.Queue) Queue to hold the processed wave segments
+            _id: (int) Identifier of the processed wave segment
+
+        Returns:
+            numpy array: Processed wave segment
+        """
+        mix_waves = mix_waves.split(1)
         with torch.no_grad():
             pw = []
-            for mix_waves in tqdm(mix_wavesx):
-
-                spec = self.model.stft(mix_waves)
+            for mix_wave in mix_waves:
+                self.prog.update()
+                spec = self.model.stft(mix_wave)
                 processed_spec = torch.tensor(self.process(spec))
                 processed_wav = self.model.istft(processed_spec.to(self.device))
                 processed_wav = processed_wav[:,:,trim:-trim].transpose(0,1).reshape(2, -1).cpu().numpy()
                 pw.append(processed_wav)
-        
-        return np.concatenate(pw, axis=-1)[:, :-pad]
+        processed_signal = np.concatenate(pw, axis=-1)[:, :-pad]
+        q.put({_id:processed_signal})
+        return processed_signal
+
+    def process_wave(self, wave:np.array, mt_threads=1):
+        """
+        Process the wave array in a multi-threaded environment
+
+        Args:
+            wave: (np.array) Wave array to be processed
+            mt_threads: (int) Number of threads to be used for processing
+
+        Returns:
+            numpy array: Processed wave array
+        """
+        self.prog = tqdm(total=0)
+        chunk = wave.shape[-1]//mt_threads
+        waves = self.segment(wave, False, chunk)
+
+        # Create a queue to hold the processed wave segments
+        q = queue.Queue()
+        threads = []
+        for c, batch in enumerate(waves):
+            mix_waves, pad, trim = self.pad_wave(batch)
+            self.prog.total = len(mix_waves)*mt_threads
+            thread = threading.Thread(target=self._process_wave, args=(mix_waves, trim, pad, q, c))
+            thread.start()
+            threads.append(thread)
+        for thread in threads:
+            thread.join()
+        self.prog.close()
+
+        processed_batches = []
+        while not q.empty():
+            processed_batches.append(q.get())
+        processed_batches = [list(wave.values())[0] for wave in sorted(processed_batches, key=lambda d: list(d.keys())[0])]
+        assert len(processed_batches) == len(waves), 'Incomplete processed batches, please reduce batch size!'
+        return self.segment(processed_batches, True, chunk)

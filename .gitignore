@@ -1,0 +1,6 @@
+
+*.pyc
+*.onnx
+*.wav
+*.flac
+*test*.py
